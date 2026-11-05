@@ -1,0 +1,11 @@
+merchant_id,merchant_name,upi_vpa,qr_payload,qr_type,qr_present,merchant_status,merchant_risk_score,historical_txn_count,historical_fraud_count,is_known_merchant
+merchant_115,Merchant 115,merchant115@demo,upi://pay?pa=merchant115@demo&pn=Merchant%20115,UPI,1,Known,0.1,120,1,1
+merchant_143,Merchant 143,merchant143@demo,upi://pay?pa=merchant143@demo&pn=Merchant%20143,UPI,1,Known,0.2,95,2,1
+merchant_239,Merchant 239,merchant239@demo,upi://pay?pa=merchant239@demo&pn=Merchant%20239,UPI,1,Known,0.35,140,8,1
+merchant_285,Merchant 285,merchant285@demo,upi://pay?pa=merchant285@demo&pn=Merchant%20285,UPI,1,Known,0.25,88,3,1
+merchant_349,Merchant 349,merchant349@demo,upi://pay?pa=merchant349@demo&pn=Merchant%20349,UPI,1,Known,0.15,210,0,1
+merchant_433,Merchant 433,merchant433@demo,upi://pay?pa=merchant433@demo&pn=Merchant%20433,UPI,1,Known,0.3,76,4,1
+merchant_666,Merchant 666,merchant666@demo,upi://pay?pa=merchant666@demo&pn=Merchant%20666,UPI,1,Known,0.45,132,11,1
+merchant_782,Merchant 782,merchant782@demo,upi://pay?pa=merchant782@demo&pn=Merchant%20782,UPI,1,Known,0.12,180,1,1
+merchant_827,Merchant 827,merchant827@demo,upi://pay?pa=merchant827@demo&pn=Merchant%20827,UPI,1,Known,0.4,64,7,1
+merchant_901,Merchant 901,merchant901@demo,upi://pay?pa=merchant901@demo&pn=Merchant%20901,UPI,1,Known,0.55,52,13,1

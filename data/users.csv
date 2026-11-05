@@ -1,0 +1,2 @@
+﻿username,password_hash,role,balance,created,phone,email,notify_sms,notify_whatsapp,notify_email
+demo_user,11eecee636899469c8f0db8c75282b38a997496a4bf6a2babc77e4480b6f9bea,user,50000.00,2026-11-05 12:00:00,,,No,No,No

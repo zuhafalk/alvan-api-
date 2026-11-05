@@ -1,0 +1,9 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+data/live_transactions*.csv
+data/user_history/
+data/recovery_requests.csv
+data/android_alert_profiles.csv
