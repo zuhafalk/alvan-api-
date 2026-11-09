@@ -831,6 +831,69 @@ def transaction():
     if not payload.get("timestamp"):
         payload["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+
+
+
+
+
+        # ---------------------------------------------------------
+    # QR-SCAN CONTEXT: resolve merchant on the SERVER
+    # ---------------------------------------------------------
+    qr_merchant = None
+    is_qr_scan = bool(payload.get("qr_scan", False))
+
+    if is_qr_scan:
+        qr_raw = payload.get("qr_raw") or payload.get("merchant_id", "")
+        parsed_qr = _parse_qr_payload(qr_raw)
+
+        if not parsed_qr.get("valid"):
+            return jsonify({
+                "success": False,
+                "error": "Invalid UPI QR data. Please scan again."
+            }), 400
+
+        qr_merchant = _resolve_qr_merchant(parsed_qr)
+
+        # Never trust the merchant identity sent by Android.
+        payload["merchant_id"] = parsed_qr["vpa"]
+        payload["upi_vpa"] = parsed_qr["vpa"]
+        payload["is_unknown_recipient"] = int(
+            not qr_merchant.get("recognized", False)
+        )
+        payload["is_new_merchant"] = int(
+            not qr_merchant.get("recognized", False)
+        )
+
+        # Use the registry's actual score for recognized merchants.
+        # Unknown merchants retain the model's neutral default score.
+        if qr_merchant.get("recognized"):
+            payload["merchant_risk_score"] = qr_merchant.get(
+                "merchant_risk_score", 0.10
+            )
+
+        # If the QR contains a fixed amount, do not allow Android
+        # to silently substitute a different amount.
+        qr_amount = parsed_qr.get("amount")
+        if qr_amount not in (None, ""):
+            try:
+                fixed_amount = float(qr_amount)
+                submitted_amount = float(payload.get("amount", 0))
+                if (
+                    not np.isfinite(fixed_amount)
+                    or fixed_amount <= 0
+                    or abs(fixed_amount - submitted_amount) > 0.01
+                ):
+                    return jsonify({
+                        "success": False,
+                        "error": "The amount does not match the amount encoded in this QR."
+                    }), 400
+                payload["amount"] = fixed_amount
+            except (TypeError, ValueError):
+                return jsonify({
+                    "success": False,
+                    "error": "Invalid amount encoded in the QR."
+                }), 400
+
     # Optional: compute real behaviour signals from the user's saved history.
     # Turned on by setting the environment variable ALVAN_LIVE_CONTEXT=on.
     if os.environ.get("ALVAN_LIVE_CONTEXT", "off").strip().lower() == "on" and payload.get("txn_type") != "test_scenario":
@@ -873,16 +936,27 @@ def transaction():
         message = "Transaction blocked because high fraud risk was detected."
     elif prob >= 0.30:
         risk_level = "MEDIUM"
-        transaction_status = "APPROVED"
-        payment_status = "SIMULATED_SUCCESS"
-        receiver_credited = True
+        transaction_status = "APPROVED"    
+        payment_status = (
+       "READY_FOR_UPI" if is_qr_scan else "SIMULATED_SUCCESS"
+        )
+        receiver_credited = False if is_qr_scan else True
+        
         message = "Transaction approved; risk score is being monitored."
     else:
         risk_level = "LOW"
         transaction_status = "APPROVED"
-        payment_status = "SIMULATED_SUCCESS"
-        receiver_credited = True
-        message = "Transaction approved by ALVAN's fraud check. Complete the payment inside your UPI app."
+        payment_status = (
+       "READY_FOR_UPI" if is_qr_scan else "SIMULATED_SUCCESS"
+        )
+        receiver_credited = False if is_qr_scan else True
+        message = (
+      "ALVAN fraud check approved. Review and authorize the payment "
+      "inside your UPI app."
+      if is_qr_scan else
+      "Transaction approved by ALVAN's fraud check. "
+      "Complete the payment inside your UPI app."
+       )
 
     # ALVAN explanation: human-readable reasons for this decision
     try:
@@ -1005,6 +1079,7 @@ def transaction_payment_status():
         df.to_csv(LIVE_DATA_PATH, index=False)
 
     return jsonify({"success": True, "transaction_id": transaction_id, "upi_status": status})
+    
 
 
 # ---------------------------------------------------------
