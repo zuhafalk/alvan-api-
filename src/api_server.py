@@ -3,7 +3,7 @@ api_server.py
 
 UPI Fraud Detection API
 Receives a transaction, runs the ML fraud model,
-makes a simulated transaction decision, and stores the result.
+makes a transaction decision, and stores the result.
 
 Self-healing note:
 If data/live_transactions.csv ever has rows with a different number of fields
@@ -29,7 +29,14 @@ from urllib.parse import urlparse, parse_qs
 from datetime import datetime
 
 from predict import predict_transaction
-from alvan_reasons import MARK, build_reasons, build_summary, explain_latest_transaction, is_why_question
+from alvan_reasons import (
+    MARK,
+    build_reasons,
+    build_summary,
+    enrich_payload_with_history,
+    explain_latest_transaction,
+    is_why_question,
+)
 
 
 app = Flask(__name__)
@@ -427,19 +434,16 @@ def _assistant_answer_english(question, current_page, user_id):
     q = str(question or "").strip().lower()
     page = str(current_page or "Home").strip().lower()
     if not q:
-        return
+        return "Please enter a valid question about ALVAN so I can help you."
     if is_why_question(q):
         try:
             return explain_latest_transaction(user_id, _read_live_transactions())
         except Exception:
-          app.logger.exception("Could not explain latest transaction")
-        
-        
-        "Please enter a valid question about ALVAN so I can help you."
+            app.logger.exception("Could not explain latest transaction")
     page_guides = {
         "home": "Home shows ALVAN's demo overview, API connection status, quick actions, and a clearly labelled demo balance. It is not a real bank balance.",
-        "pay": "Pay lets you submit a sample amount and merchant to the Python fraud model. The result is a simulation only; no UPI payment is initiated.",
-        "history": "History retrieves saved simulated predictions from the API's live_transactions.csv file. Use Refresh to reload the latest rows.",
+        "pay": "Pay checks the recipient and amount with ALVAN's fraud model. If the payment is approved, your UPI app opens so you can complete it, and ALVAN shows the result that app reports.",
+        "history": "History lists your fraud checks with the decision, the reasons, and the payment result reported by your UPI app. Use Refresh to reload the latest rows.",
         "assistant": "The Assistant answers app-related questions. Choose the language, type a question or use voice input, then send it.",
         "qr": "QR verification decodes a UPI QR or VPA and compares it with the local merchant registry. An unknown merchant is not automatically safe.",
         "recovery": "Recovery records a request against an eligible simulated transaction. A pending record is not a refund and does not reverse a bank transfer.",
@@ -451,7 +455,7 @@ def _assistant_answer_english(question, current_page, user_id):
     if any(x in q for x in ("real bank", "bank balance", "real balance", "actual balance", "my balance", "how much money")):
         return "The ₹50,000 shown on Home is an ALVAN demo balance only. This prototype does not connect to a bank and cannot retrieve real bank funds. Check your bank or UPI app for the actual balance."
     if any(x in q for x in ("real payment", "actual payment", "send money", "phonepe", "google pay", "upi pin", "bank transfer", "payment completed")):
-        return "The native Pay screen currently performs fraud screening in simulation mode only. It does not initiate or confirm a real UPI payment. Never share your UPI PIN or OTP with ALVAN."
+        return "ALVAN checks every payment with its fraud model first. If it approves, your UPI app (PhonePe, Google Pay, BHIM, etc.) opens and you complete the payment there with your own UPI PIN. ALVAN then shows the status your UPI app reports, which is not a bank statement. Never share your UPI PIN or OTP with ALVAN."
     if any(x in q for x in ("qr", "scan code", "vpa", "merchant verify")):
         return "Open Tools > QR verification and scan a QR or paste a UPI URI/VPA. ALVAN compares it with its local merchant registry. A decoded QR is not proof that a merchant is trustworthy."
     if any(x in q for x in ("recover", "refund", "recovery request")):
@@ -468,19 +472,19 @@ def _assistant_answer_english(question, current_page, user_id):
                     risk = row.get("risk_level", "unknown")
                     status = row.get("transaction_status", "unknown")
                     txid = row.get("transaction_id", "unknown")
-                    return f"Your latest saved simulated transaction is {txid}, amount ₹{amount}, risk {risk}, status {status}. Check History for all recorded results."
+                    return f"Your latest saved transaction is {txid}, amount ₹{amount}, risk {risk}, status {status}. Check History for all recorded results."
             except Exception:
                 pass
-        return "No saved simulated transaction was found for this app user yet. Open Pay and run one fraud check, then refresh History."
+        return "No saved transaction was found for this app user yet. Open Pay and run one fraud check, then refresh History."
     if any(x in q for x in ("shap", "lime", "explain", "feature importance", "why did")):
-        return "SHAP and LIME explain which input features influenced a model prediction. The current Android API response shows the fraud probability, risk level, and decision; full SHAP/LIME plots remain in the existing Streamlit report unless separately exposed by an API. A score is not proof of fraud."
+        return "SHAP and LIME explain which input features influenced a model prediction. The current Android API response shows the fraud probability, risk level, decision and plain-language reasons; full SHAP/LIME plots remain in the existing Streamlit report unless separately exposed by an API. A score is not proof of fraud."
     if any(x in q for x in ("fraud", "lightgbm", "machine learning", "model", "risk score", "probability", "threshold")):
         return "ALVAN sends transaction details to predict.py, which runs the trained fraud model and returns a probability, risk level, threshold-based decision, and a message. Low risk is not a guarantee; confirm transaction details before any real payment."
     if any(x in q for x in ("email", "gmail", "notification", "alert")):
         return "Open Tools > Alerts to save an email address and enable email reports. Delivery depends on the existing notifications.py module and its SMTP/provider configuration; a failed email must not change the fraud decision."
     if any(x in q for x in ("help", "what can you answer", "valid question", "features", "what does alvan do", "about alvan")):
-        return "I can explain Home, simulated fraud checks, transaction history, QR merchant verification, recovery requests, email alert settings, multilingual voice questions, and the difference between ALVAN demo data and real bank activity."
-    return f"I can help with ALVAN's Home, fraud-check simulation, History, QR verification, recovery requests, and Alerts. You're asking from the {current_page or 'app'} screen. Try asking how a fraud score is calculated, how to view history, or what a QR verification result means."
+        return "I can explain Home, fraud checks, why a payment was safe or blocked, transaction history, QR merchant verification, recovery requests, email alert settings, multilingual voice questions, and the difference between ALVAN demo data and real bank activity."
+    return f"I can help with ALVAN's Home, fraud checks, History, QR verification, recovery requests, and Alerts. You're asking from the {current_page or 'app'} screen. Try asking why your last transaction was safe or blocked, how a fraud score is calculated, or what a QR verification result means."
 
 
 # ---------------------------------------------------------
@@ -827,6 +831,18 @@ def transaction():
     if not payload.get("timestamp"):
         payload["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # Optional: compute real behaviour signals from the user's saved history.
+    # Turned on by setting the environment variable ALVAN_LIVE_CONTEXT=on.
+    if os.environ.get("ALVAN_LIVE_CONTEXT", "off").strip().lower() == "on" and payload.get("txn_type") != "test_scenario":
+        try:
+            _merchant_for_context = None
+            _parsed_ctx = _parse_qr_payload(payload.get("merchant_id", ""))
+            if _parsed_ctx.get("valid"):
+                _merchant_for_context = _resolve_qr_merchant(_parsed_ctx)
+            payload = enrich_payload_with_history(payload, _read_live_transactions(), _merchant_for_context)
+        except Exception:
+            app.logger.exception("Live context enrichment skipped")
+
     try:
         result = predict_transaction(payload)
         prob = normalize_probability(
@@ -866,9 +882,9 @@ def transaction():
         transaction_status = "APPROVED"
         payment_status = "SIMULATED_SUCCESS"
         receiver_credited = True
-        message = "Transaction approved for simulated payment."
+        message = "Transaction approved by ALVAN's fraud check. Complete the payment inside your UPI app."
 
-        # ALVAN explanation: human-readable reasons for this decision
+    # ALVAN explanation: human-readable reasons for this decision
     try:
         _hist = _read_live_transactions()
     except Exception:
@@ -954,6 +970,41 @@ def transaction():
         "reasons": reasons,
         "explanation": explanation,
     })
+
+
+@app.route("/transaction/payment-status", methods=["POST"])
+def transaction_payment_status():
+    """Record the result a UPI app reported for an approved transaction."""
+    payload = request.get_json(silent=True) or {}
+    user_id = str(payload.get("user_id") or "").strip()
+    transaction_id = str(payload.get("transaction_id") or "").strip()
+    status = str(payload.get("upi_status") or "").strip().upper()
+    allowed = {"SUCCESS", "FAILURE", "SUBMITTED", "CANCELLED", "UNKNOWN", "USER_CONFIRMED"}
+    if not user_id or not transaction_id or status not in allowed:
+        return jsonify({"success": False, "error": "user_id, transaction_id and a valid upi_status are required."}), 400
+    reference = re.sub(r"[^A-Za-z0-9_.-]", "", str(payload.get("upi_txn_ref") or ""))[:60]
+
+    with _LIVE_FILE_LOCK:
+        df = _read_live_transactions()
+        if df.empty or not {"transaction_id", "user_id"}.issubset(df.columns):
+            return jsonify({"success": False, "error": "Transaction not found."}), 404
+        mask = (df["transaction_id"].astype(str) == transaction_id) & (df["user_id"].astype(str) == user_id)
+        if not mask.any():
+            return jsonify({"success": False, "error": "Transaction not found for this user."}), 404
+        if "transaction_status" in df.columns and not (
+            df.loc[mask, "transaction_status"].astype(str).str.upper() == "APPROVED"
+        ).all():
+            return jsonify({"success": False, "error": "Only approved transactions can have a payment status."}), 400
+        for column in ("upi_status", "upi_txn_ref", "upi_status_time"):
+            if column not in df.columns:
+                df[column] = ""
+        df.loc[mask, "upi_status"] = status
+        if reference:
+            df.loc[mask, "upi_txn_ref"] = reference
+        df.loc[mask, "upi_status_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        df.to_csv(LIVE_DATA_PATH, index=False)
+
+    return jsonify({"success": True, "transaction_id": transaction_id, "upi_status": status})
 
 
 # ---------------------------------------------------------

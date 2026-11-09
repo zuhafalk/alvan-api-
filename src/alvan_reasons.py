@@ -68,14 +68,22 @@ def build_reasons(payload, prob, threshold, is_fraud, history=None, merchant=Non
         past = pd.DataFrame()
         if history is not None and not history.empty and "user_id" in history.columns:
             past = history[history["user_id"].astype(str) == user].copy()
+            if "txn_type" in past.columns:
+                past = past[past["txn_type"].astype(str) != "test_scenario"]
 
         # Amount compared with the user's normal spending
         if amount is not None:
             amounts = pd.Series(dtype=float)
             if "amount" in past.columns:
                 amounts = pd.to_numeric(past["amount"], errors="coerce").dropna()
+            avg = None
             if len(amounts) >= 3:
                 avg = float(amounts.mean())
+            elif "user_avg_amount" in payload:
+                supplied = _to_float(payload.get("user_avg_amount"))
+                if supplied and supplied > 0:
+                    avg = supplied
+            if avg is not None:
                 if avg > 0 and amount > 3 * avg:
                     _add(reasons, "risk",
                          f"The amount {_money(amount)} is {amount / avg:.1f} times your usual average of {_money(avg)}.")
@@ -126,13 +134,33 @@ def build_reasons(payload, prob, threshold, is_fraud, history=None, merchant=Non
                 _add(reasons, "warn",
                      "The recipient is not in the ALVAN merchant registry, so it is unverified.")
 
+        # Behaviour signals supplied with the transaction (for example by the fraud test lab).
+        # Real Android payments do not send these, so they only appear for scenarios.
+        def _val(key):
+            return (_to_float(payload.get(key)) or 0.0) if key in payload else 0.0
+
+        if _val("device_change") == 1:
+            _add(reasons, "risk", "The payment came from a new or different device.")
+        if _val("ip_change") == 1:
+            _add(reasons, "warn", "The network (IP address) changed since the user's last activity.")
+        if _val("txn_velocity") > 5:
+            _add(reasons, "risk", f"{int(_val('txn_velocity'))} transactions were made in a very short time.")
+        if _val("geo_distance_km") > 200:
+            _add(reasons, "warn", f"The payment originates about {_val('geo_distance_km'):,.0f} km from the usual location.")
+        if _val("previous_fraud_count") > 0:
+            _add(reasons, "risk", f"The account has {int(_val('previous_fraud_count'))} earlier fraud flag(s).")
+        if _val("merchant_risk_score") > 0.7:
+            _add(reasons, "risk", "The recipient has a high merchant risk score.")
+        if "user_age_days" in payload and 0 < _val("user_age_days") < 14:
+            _add(reasons, "warn", f"The account is only {int(_val('user_age_days'))} days old.")
+
         # Time of day and burst of payments
         ts = pd.to_datetime(payload.get("timestamp"), errors="coerce")
         if pd.notna(ts):
             if 0 <= ts.hour < 5:
                 _add(reasons, "warn",
                      f"The payment is being made at an unusual hour ({ts.strftime('%I:%M %p')}).")
-            if not past.empty and "timestamp" in past.columns:
+            if not past.empty and "timestamp" in past.columns and "txn_velocity" not in payload:
                 times = pd.to_datetime(past["timestamp"], errors="coerce")
                 recent = int(((ts - times).dt.total_seconds().between(0, 600)).sum())
                 if recent >= 3:
@@ -144,6 +172,53 @@ def build_reasons(payload, prob, threshold, is_fraud, history=None, merchant=Non
     order = ["risk", "warn", "safe"] if is_fraud else ["safe", "warn", "risk"]
     reasons.sort(key=lambda item: order.index(item["impact"]))
     return reasons
+
+
+def enrich_payload_with_history(payload, history, merchant=None):
+    """
+    Return a copy of the payload with REAL behaviour signals computed from the
+    user's saved history. Only fields the caller did not send are filled, and the
+    fraud-lab test scenarios are never used as history.
+
+    Signals: user_avg_amount (needs 3+ earlier payments), txn_velocity (payments in
+    the last 10 minutes), is_new_merchant (first payment to this recipient) and
+    merchant_risk_score (when the recipient is in the merchant registry).
+    """
+    enriched = dict(payload)
+    if history is None or history.empty or "user_id" not in history.columns:
+        return enriched
+
+    user = str(payload.get("user_id", ""))
+    past = history[history["user_id"].astype(str) == user].copy()
+    if "txn_type" in past.columns:
+        past = past[past["txn_type"].astype(str) != "test_scenario"]
+    if past.empty:
+        return enriched
+
+    def _set(key, value):
+        if key not in enriched or enriched[key] in (None, ""):
+            enriched[key] = value
+
+    if "amount" in past.columns:
+        amounts = pd.to_numeric(past["amount"], errors="coerce").dropna()
+        if len(amounts) >= 3:
+            _set("user_avg_amount", float(amounts.mean()))
+
+    ts = pd.to_datetime(payload.get("timestamp"), errors="coerce")
+    if pd.notna(ts) and "timestamp" in past.columns:
+        times = pd.to_datetime(past["timestamp"], errors="coerce")
+        recent = int(((ts - times).dt.total_seconds().between(0, 600)).sum())
+        _set("txn_velocity", recent + 1)
+
+    vendor = str(payload.get("merchant_id", "")).strip().lower()
+    if vendor and "merchant_id" in past.columns:
+        seen = bool((past["merchant_id"].astype(str).str.strip().str.lower() == vendor).any())
+        _set("is_new_merchant", 0 if seen else 1)
+
+    if merchant and merchant.get("recognized") and merchant.get("merchant_risk_score") is not None:
+        _set("merchant_risk_score", float(merchant["merchant_risk_score"]))
+
+    return enriched
 
 
 def build_summary(reasons, is_fraud, risk_level, prob, threshold):
