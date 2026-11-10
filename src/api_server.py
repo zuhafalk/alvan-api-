@@ -763,7 +763,46 @@ def alerts():
     except Exception:
         app.logger.exception("Could not save Android alert preferences")
         return jsonify({"success": False, "error": "Could not save alert preferences."}), 500
+SAFETY_HIGH_AMOUNT = 25000.0
+SAFETY_EXTREME_AMOUNT = 50000.0
+SAFETY_SPIKE_FACTOR = 10.0
 
+
+def _safety_rule_reasons(payload, history, merchant):
+    """Rule-based safeguards that run alongside the ML model."""
+    reasons = []
+    try:
+        amount = float(payload.get("amount", 0) or 0)
+    except (TypeError, ValueError):
+        return reasons
+
+    user_id = str(payload.get("user_id", ""))
+    recipient = str(payload.get("merchant_id", "")).strip().lower()
+
+    prior = pd.DataFrame()
+    if history is not None and not history.empty and {"user_id", "merchant_id", "amount"}.issubset(history.columns):
+        prior = history[history["user_id"].astype(str) == user_id]
+        if "txn_type" in prior.columns:
+            prior = prior[prior["txn_type"].astype(str) != "test_scenario"]
+        if "transaction_status" in prior.columns:
+            prior = prior[prior["transaction_status"].astype(str).str.upper() == "APPROVED"]
+
+    seen_before = (not prior.empty) and recipient in set(prior["merchant_id"].astype(str).str.strip().str.lower())
+    registry_known = bool(merchant and merchant.get("recognized"))
+    flagged_new = str(payload.get("is_new_merchant", "")).strip().lower() in {"1", "true"}
+    is_new_recipient = (not seen_before and not registry_known) or flagged_new
+
+    if amount >= SAFETY_EXTREME_AMOUNT:
+        reasons.append({"impact": "risk", "text": f"The amount (₹{amount:,.0f}) is above ALVAN's single-payment safety limit of ₹{SAFETY_EXTREME_AMOUNT:,.0f}"})
+    elif amount >= SAFETY_HIGH_AMOUNT and is_new_recipient:
+        reasons.append({"impact": "risk", "text": f"A large payment (₹{amount:,.0f}) to a new, unverified recipient"})
+
+    if len(prior) >= 3:
+        average = pd.to_numeric(prior["amount"], errors="coerce").mean()
+        if pd.notna(average) and average > 0 and amount >= 5000 and amount >= SAFETY_SPIKE_FACTOR * average:
+            reasons.append({"impact": "risk", "text": f"The amount is about {amount / average:.0f}x your usual payment of ₹{average:,.0f}"})
+
+    return reasons
 
 # ---------------------------------------------------------
 # TRANSACTION
@@ -930,6 +969,16 @@ def transaction():
     # The model's own threshold determines the block decision.
     is_fraud = int(is_fraud == 1 or prob >= decision_threshold)
 
+    try:
+        _rule_parsed = _parse_qr_payload(payload.get("merchant_id", ""))
+        _rule_merchant = _resolve_qr_merchant(_rule_parsed) if _rule_parsed.get("valid") else None
+        rule_reasons = _safety_rule_reasons(payload, _read_live_transactions(), _rule_merchant)
+    except Exception:
+        app.logger.exception("Safety rules skipped")
+        rule_reasons = []
+    if rule_reasons:
+        is_fraud = 1
+
     if is_fraud:
         risk_level = "HIGH"
         transaction_status = "BLOCKED"
@@ -960,6 +1009,10 @@ def transaction():
       "Complete the payment inside your UPI app."
        )
 
+        
+    if rule_reasons:
+        message = "Transaction blocked by ALVAN's safety rules: " + rule_reasons[0]["text"] + "."
+
     # ALVAN explanation: human-readable reasons for this decision
     try:
         _hist = _read_live_transactions()
@@ -971,6 +1024,8 @@ def transaction():
     except Exception:
         _merchant = None
     reasons = build_reasons(payload, prob, decision_threshold, is_fraud, _hist, _merchant)
+    if rule_reasons:
+        reasons = rule_reasons + list(reasons)
     explanation = build_summary(reasons, is_fraud, risk_level, prob, decision_threshold)
 
     os.makedirs(os.path.dirname(LIVE_DATA_PATH), exist_ok=True)
