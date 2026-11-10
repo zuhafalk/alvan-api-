@@ -341,6 +341,53 @@ def _recovery_error(exc):
     import traceback
     traceback.print_exc()
     return jsonify({"success": False, "error": f"Server error: {type(exc).__name__}: {exc}"}), 500
+# ----------------------------- bank link (demo) -----------------------------
+
+BANK_COLUMNS = ["user_id", "bank_name", "holder_name", "account_last4", "ifsc", "linked_at"]
+IFSC_REGEX = re.compile(r"[A-Z]{4}0[A-Z0-9]{6}")
+
+
+@bp.route("/bank/link", methods=["GET", "POST"])
+def bank_link():
+    if request.method == "GET":
+        user_id = str(request.args.get("user_id") or "").strip()
+        for row in _read("bank_links.csv"):
+            if _norm(row.get("user_id")) == _norm(user_id):
+                return jsonify({"success": True, "linked": True,
+                                "bank_name": row.get("bank_name", ""),
+                                "holder_name": row.get("holder_name", ""),
+                                "account_last4": row.get("account_last4", ""),
+                                "ifsc": row.get("ifsc", "")})
+        return jsonify({"success": True, "linked": False})
+
+    payload = request.get_json(silent=True) or {}
+    user_id = str(payload.get("user_id") or "").strip()
+    bank_name = str(payload.get("bank_name") or "").strip()[:60]
+    holder = str(payload.get("holder_name") or "").strip()[:80]
+    last4 = str(payload.get("account_last4") or "").strip()
+    ifsc = str(payload.get("ifsc") or "").strip().upper()
+    if not user_id or len(bank_name) < 2 or len(holder) < 2:
+        return jsonify({"success": False, "error": "Enter the bank name and account holder name."}), 400
+    if not re.fullmatch(r"\d{4}", last4):
+        return jsonify({"success": False, "error": "Enter exactly the last 4 digits of the account number."}), 400
+    if not IFSC_REGEX.fullmatch(ifsc):
+        return jsonify({"success": False, "error": "Enter a valid 11-character IFSC code, e.g. SBIN0001234."}), 400
+    with _LOCK:
+        rows = [r for r in _read("bank_links.csv") if _norm(r.get("user_id")) != _norm(user_id)]
+        rows.append({"user_id": user_id, "bank_name": bank_name, "holder_name": holder,
+                     "account_last4": last4, "ifsc": ifsc, "linked_at": _stamp()})
+        _write("bank_links.csv", BANK_COLUMNS, rows)
+    return jsonify({"success": True, "message": "Bank account linked."})
+
+
+@bp.route("/bank/unlink", methods=["POST"])
+def bank_unlink():
+    payload = request.get_json(silent=True) or {}
+    user_id = str(payload.get("user_id") or "").strip()
+    with _LOCK:
+        rows = [r for r in _read("bank_links.csv") if _norm(r.get("user_id")) != _norm(user_id)]
+        _write("bank_links.csv", BANK_COLUMNS, rows)
+    return jsonify({"success": True, "message": "Bank account removed."})
 
 def register_recovery(app, data_dir, read_live_fn):
     _CFG["data_dir"] = data_dir
