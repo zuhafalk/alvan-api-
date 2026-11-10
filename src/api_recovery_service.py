@@ -215,7 +215,7 @@ def create():
             "transaction_id": txn_id,
             "sender_id": user_id,
             "recipient_upi": recipient_upi,
-            "amount": tx.get("amount", ""),
+            "amount": str(tx.get("amount", "")),
             "reason": reason,
             "status": "PENDING",
             "created_at": _stamp(created),
@@ -333,7 +333,14 @@ def confirm_return():
         row["updated_at"] = _stamp()
         _write("recovery_v2_requests.csv", REQ_COLUMNS, rows)
     return jsonify({"success": True, "request": _view(row, user_id)})
-
+@bp.errorhandler(Exception)
+def _recovery_error(exc):
+    from werkzeug.exceptions import HTTPException
+    if isinstance(exc, HTTPException):
+        return exc
+    import traceback
+    traceback.print_exc()
+    return jsonify({"success": False, "error": f"Server error: {type(exc).__name__}: {exc}"}), 500
 
 def register_recovery(app, data_dir, read_live_fn):
     _CFG["data_dir"] = data_dir
