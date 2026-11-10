@@ -27,9 +27,11 @@ import shutil
 import threading
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime
+from api_recovery_service import register_recovery
 
 from predict import predict_transaction
 from alvan_reasons import (
+
     MARK,
     build_reasons,
     build_summary,
@@ -1081,7 +1083,7 @@ def transaction_payment_status():
     return jsonify({"success": True, "transaction_id": transaction_id, "upi_status": status})
     
 
-
+register_recovery(app, DATA_DIR, _read_live_transactions)
 # ---------------------------------------------------------
 # RUN SERVER
 # ---------------------------------------------------------
